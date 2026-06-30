@@ -59,6 +59,18 @@ siliqs-mesh-bridge --iface usb --port /dev/ttyACM0     --handler mqtt --broker <
 ```
 No WiFi/MQTT on the node — the host does the MQTT step (the node stays pure-mesh).
 
+## No command line — the control panel
+
+A small **localhost web UI** to start/stop the bridge and watch its log, for users
+who don't want the CLI. It needs host OS access (serial/PTY/BLE/MQTT), so it's a tiny
+local server (stdlib only) that spawns the bridge for you.
+
+```sh
+siliqs-mesh-bridge-web        # then open http://127.0.0.1:8765
+```
+Pick the transport + handler in the form, click **Start**, and open the printed
+`/dev/pts/…` (or your `link` path) with your serial software. Binds 127.0.0.1 only.
+
 ### Framing (it does **not** stream byte-by-byte)
 
 | `--mode` | behaviour |
