@@ -349,6 +349,44 @@ def list_ports():
     return out
 
 
+def scan_nodes(iface_kind, port, ble):
+    """Briefly open the radio and return its node DB so the UI can offer a peer
+    pick-list. Needs the (single) radio, so it only works while the bridge is
+    stopped — returns an error otherwise. Reuses the verified CLI connect helpers."""
+    if runner.running():
+        return None, "stop the bridge first — scanning the mesh needs the radio (shared with the bridge)"
+    iface = None
+    try:
+        if iface_kind == "ble":
+            if not ble:
+                return None, "set the BLE name/address first"
+            iface = siliqs_mesh_bridge.open_ble(ble)
+        else:
+            if not port:
+                return None, "set the serial port first"
+            iface = siliqs_mesh_bridge.open_usb(port)
+        my = iface.myInfo.my_node_num & 0xffffffff
+        out = []
+        for n in (iface.nodes or {}).values():
+            num = n.get("num")
+            if num is None or (num & 0xffffffff) == my:   # skip self — can't pipe to yourself
+                continue
+            u = n.get("user") or {}
+            out.append({"id": "!%08x" % (num & 0xffffffff),
+                        "short": u.get("shortName") or "", "long": u.get("longName") or "",
+                        "hops": n.get("hopsAway"), "lastHeard": n.get("lastHeard") or 0})
+        out.sort(key=lambda x: x["lastHeard"], reverse=True)
+        return out, None
+    except BaseException as e:   # open_usb raises SystemExit on failure
+        return None, f"scan failed: {e}"
+    finally:
+        if iface is not None:
+            try:
+                iface.close()
+            except Exception:
+                pass
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         b = body if isinstance(body, (bytes, bytearray)) else json.dumps(body).encode()
@@ -389,6 +427,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/stop":
             ok, msg = runner.stop()
             self._send(200, {"ok": ok, "msg": msg})
+        elif self.path == "/api/nodes":
+            nodes, err = scan_nodes(cfg.get("iface", "usb"), cfg.get("port"), cfg.get("ble"))
+            self._send(200, {"nodes": nodes or [], "error": err})
         elif self.path == "/api/tty/send":
             link = _serial_link()
             ok = False
@@ -451,11 +492,14 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 
   <div id="serialCfg" style="margin-top:12px">
    <div class="row">
-    <div class="field"><label>Peer node (the other end)</label><input id="peer" placeholder="!7d51bdc4"></div>
+    <div class="field"><label>Peer node (the other end)</label><input id="peer" list="peerlist" placeholder="!7d51bdc4 — or scan & pick"><datalist id="peerlist"></datalist></div>
     <div class="field"><label>Virtual port path (link)</label><input id="link" placeholder="/tmp/meshtty"></div></div>
    <div class="row">
     <div class="field"><label>Framing</label><select id="mode"><option value="line">line (per Enter)</option><option value="stream">stream (binary)</option></select></div>
     <div class="field"><label>Max bytes / packet</label><input id="mtu" type="number" value="50" min="1" max="233"></div></div>
+   <div class="row" style="align-items:center;margin-top:4px">
+    <button id="scanNodes" type="button">↻ scan mesh for nodes</button>
+    <span class="note" id="scanNote">Pick the peer from the dropdown, or type a node id. Scanning briefly opens the radio — stop the bridge first.</span></div>
    <p class="note">Run this on <b>both</b> hosts, each peer pointing at the other. Open the printed
     <code>/dev/pts/…</code> (or the link) with your serial software.</p>
   </div>
@@ -583,6 +627,25 @@ async function ttySend(){
  $('ttyIn').value='';
  try{await fetch('/api/tty/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}catch(e){}
 }
+async function scanNodes(){
+ const b=$('scanNodes'), old=b.textContent; b.disabled=true; b.textContent='scanning…';
+ $('scanNote').textContent='opening the radio… (cold handshake can take a few seconds)';
+ try{
+  const body={iface:ifaceVal(),port:val('port'),ble:val('ble')};
+  const d=await (await fetch('/api/nodes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  if(d.error){$('scanNote').textContent=d.error; }
+  else{
+   const ns=d.nodes||[];
+   $('peerlist').innerHTML=ns.map(n=>{
+    const nm=[n.short,n.long].filter(Boolean).join(' / ')||n.id;
+    const hop=(n.hops==null)?'':` · ${n.hops} hop`;
+    return `<option value="${n.id}">${nm}${hop}</option>`;}).join('');
+   $('scanNote').textContent=ns.length?`found ${ns.length} node(s) — click the Peer field to pick`:'no other nodes heard yet';
+  }
+ }catch(e){$('scanNote').textContent='scan failed';}
+ b.disabled=false; b.textContent=old;
+}
+$('scanNodes').onclick=scanNodes;
 $('ttySend').onclick=ttySend;
 $('ttyIn').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();ttySend();}});
 $('ttyClear').onclick=()=>{$('ttyOut').textContent='—';};

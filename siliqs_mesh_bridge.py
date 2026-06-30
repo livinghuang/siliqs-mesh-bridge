@@ -69,6 +69,7 @@ def open_usb(port, retries=5):
     import meshtastic.serial_interface as si
     last = None
     for attempt in range(1, retries + 1):
+        iface = None
         try:
             iface = si.SerialInterface(devPath=port, connectNow=False)
             try:
@@ -79,6 +80,11 @@ def open_usb(port, retries=5):
             return iface
         except Exception as e:  # noqa: BLE001
             last = e
+            if iface is not None:        # release the port before retrying, else the
+                try:                     # half-open handle keeps the exclusive lock and
+                    iface.close()        # every later attempt fails with "Resource busy"
+                except Exception:
+                    pass
             print(f"  connect attempt {attempt}/{retries} failed: {e}", file=sys.stderr)
             time.sleep(1.5)
     raise SystemExit(f"could not open USB {port}: {last}")
